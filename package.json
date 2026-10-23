@@ -1,0 +1,12 @@
+{
+  "name": "file-genie",
+  "version": "1.0.0",
+  "description": "AI-powered Windows desktop file organizer",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^35.1.5"
+  }
+}
