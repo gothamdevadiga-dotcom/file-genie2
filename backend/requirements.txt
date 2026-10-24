@@ -1,2 +1,5 @@
 fastapi
 uvicorn
+pypdf
+python-docx
+python-pptx

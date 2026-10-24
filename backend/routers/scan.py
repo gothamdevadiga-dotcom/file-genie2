@@ -6,9 +6,10 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from services.extractor import extract_text
+
 router = APIRouter()
 
-# File types File Genie will handle. Text extraction comes in a later phase.
 SUPPORTED_TYPES = {
     ".pdf": "PDF",
     ".docx": "Word",
@@ -26,14 +27,14 @@ SUPPORTED_TYPES = {
     ".css": "Code",
 }
 
-# Folders that are never useful to scan.
 SKIP_FOLDERS = {
     ".git", "node_modules", "__pycache__", ".venv", "venv",
     "$RECYCLE.BIN", "System Volume Information",
 }
 
-# Holds the result of the most recent scan (memory only, resets on restart).
+# Memory only: resets when the server restarts.
 _last_scan = {"scan_id": None, "folder": None, "scanned_at": None, "files": []}
+_texts = {}  # file id -> extracted text (kept out of the file list to keep it light)
 
 
 class ScanRequest(BaseModel):
@@ -50,10 +51,10 @@ def scan_folder(request: ScanRequest):
         raise HTTPException(status_code=400, detail="That path is not a folder.")
 
     files = []
+    texts = {}
     unsupported = 0
     unreadable = 0
 
-    # os.walk goes through the folder and all its subfolders.
     for current, dirs, names in os.walk(folder, onerror=lambda e: None):
         dirs[:] = [d for d in dirs if d not in SKIP_FOLDERS]
 
@@ -71,8 +72,12 @@ def scan_folder(request: ScanRequest):
                 unreadable += 1
                 continue
 
+            file_id = len(files) + 1
+            result = extract_text(path, ext)
+            texts[file_id] = result["text"]
+
             files.append({
-                "id": len(files) + 1,
+                "id": file_id,
                 "name": name,
                 "extension": ext,
                 "type": SUPPORTED_TYPES[ext],
@@ -80,7 +85,10 @@ def scan_folder(request: ScanRequest):
                 "path": str(path),
                 "folder": str(path.parent),
                 "modified": datetime.fromtimestamp(info.st_mtime).isoformat(),
-                "category": None,  # filled in by categorization (later phase)
+                "category": None,  # filled in by categorization (next step)
+                "extraction_status": result["status"],  # ok / empty / error
+                "extraction_error": result["error"],
+                "char_count": len(result["text"]),
             })
 
     scan_id = str(uuid.uuid4())
@@ -90,11 +98,16 @@ def scan_folder(request: ScanRequest):
         "scanned_at": datetime.now().isoformat(),
         "files": files,
     })
+    _texts.clear()
+    _texts.update(texts)
 
     return {
         "scan_id": scan_id,
         "folder": str(folder),
         "file_count": len(files),
+        "text_extracted": sum(1 for f in files if f["extraction_status"] == "ok"),
+        "no_text_found": sum(1 for f in files if f["extraction_status"] == "empty"),
+        "extraction_errors": sum(1 for f in files if f["extraction_status"] == "error"),
         "skipped_unsupported": unsupported,
         "skipped_unreadable": unreadable,
     }
@@ -102,11 +115,27 @@ def scan_folder(request: ScanRequest):
 
 @router.get("/files")
 def list_files():
-    # Empty until the user scans a folder. No fake data.
     return {
         "scan_id": _last_scan["scan_id"],
         "folder": _last_scan["folder"],
         "scanned_at": _last_scan["scanned_at"],
         "count": len(_last_scan["files"]),
         "files": _last_scan["files"],
+    }
+
+
+@router.get("/files/{file_id}/text")
+def file_text_preview(file_id: int):
+    match = next((f for f in _last_scan["files"] if f["id"] == file_id), None)
+    if match is None:
+        raise HTTPException(status_code=404, detail="No scanned file with that id.")
+
+    text = _texts.get(file_id, "")
+    return {
+        "id": file_id,
+        "name": match["name"],
+        "extraction_status": match["extraction_status"],
+        "extraction_error": match["extraction_error"],
+        "char_count": len(text),
+        "preview": text[:2000],
     }
