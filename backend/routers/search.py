@@ -27,12 +27,7 @@ def _snippet(chunk: str, query: str, length: int = 350) -> str:
 
 
 def _relevance(score: float) -> str:
-    # Rough labels only. They are an estimate, not a probability.
-    if score >= 0.30:
-        return "High"
-    if score >= 0.15:
-        return "Medium"
-    return "Low"
+    return index.relevance(score)
 
 
 def _file_summary(f: dict) -> dict:
