@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from services.categorizer import categorize
 from services.extractor import extract_text
 
 router = APIRouter()
@@ -39,6 +40,10 @@ _texts = {}  # file id -> extracted text (kept out of the file list to keep it l
 
 class ScanRequest(BaseModel):
     folder: str
+
+
+class CategoryUpdate(BaseModel):
+    category: str
 
 
 @router.post("/scan")
@@ -76,6 +81,17 @@ def scan_folder(request: ScanRequest):
             result = extract_text(path, ext)
             texts[file_id] = result["text"]
 
+            if result["status"] == "ok":
+                cat = categorize(result["text"])
+            else:
+                cat = {
+                    "category": None,
+                    "confidence": 0,
+                    "level": "None",
+                    "reason": "No readable text, so this file could not be categorized.",
+                    "candidates": [],
+                }
+
             files.append({
                 "id": file_id,
                 "name": name,
@@ -85,10 +101,15 @@ def scan_folder(request: ScanRequest):
                 "path": str(path),
                 "folder": str(path.parent),
                 "modified": datetime.fromtimestamp(info.st_mtime).isoformat(),
-                "category": None,  # filled in by categorization (next step)
                 "extraction_status": result["status"],  # ok / empty / error
                 "extraction_error": result["error"],
                 "char_count": len(result["text"]),
+                "category": cat["category"],
+                "category_confidence": cat["confidence"],
+                "category_level": cat["level"],
+                "category_reason": cat["reason"],
+                "category_candidates": cat["candidates"],
+                "category_source": "auto",  # becomes "user" if the user corrects it
             })
 
     scan_id = str(uuid.uuid4())
@@ -108,6 +129,12 @@ def scan_folder(request: ScanRequest):
         "text_extracted": sum(1 for f in files if f["extraction_status"] == "ok"),
         "no_text_found": sum(1 for f in files if f["extraction_status"] == "empty"),
         "extraction_errors": sum(1 for f in files if f["extraction_status"] == "error"),
+        "categorized": sum(
+            1 for f in files if f["category"] not in (None, "Uncategorized")
+        ),
+        "uncategorized": sum(
+            1 for f in files if f["category"] in (None, "Uncategorized")
+        ),
         "skipped_unsupported": unsupported,
         "skipped_unreadable": unreadable,
     }
@@ -139,3 +166,40 @@ def file_text_preview(file_id: int):
         "char_count": len(text),
         "preview": text[:2000],
     }
+
+
+@router.get("/categories")
+def list_categories():
+    # Counts of files per category in the current scan (empty before any scan).
+    counts = {}
+    for f in _last_scan["files"]:
+        name = f["category"] or "Uncategorized"
+        counts[name] = counts.get(name, 0) + 1
+
+    return {
+        "categories": [
+            {"category": name, "count": count}
+            for name, count in sorted(counts.items(), key=lambda item: -item[1])
+        ]
+    }
+
+
+@router.put("/files/{file_id}/category")
+def correct_category(file_id: int, update: CategoryUpdate):
+    # Lets the user fix a wrong category. Only changes File Genie's label,
+    # never the file itself.
+    match = next((f for f in _last_scan["files"] if f["id"] == file_id), None)
+    if match is None:
+        raise HTTPException(status_code=404, detail="No scanned file with that id.")
+
+    new_category = update.category.strip()
+    if not new_category or len(new_category) > 50:
+        raise HTTPException(
+            status_code=400, detail="Category must be 1 to 50 characters."
+        )
+
+    match["category"] = new_category
+    match["category_source"] = "user"
+    match["category_level"] = "Set by you"
+    match["category_reason"] = "Category chosen by you."
+    return {"id": file_id, "name": match["name"], "category": new_category}
