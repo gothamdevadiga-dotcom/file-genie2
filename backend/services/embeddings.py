@@ -11,7 +11,7 @@ MAX_CHUNKS_PER_FILE = 400
 # About 90 MB, downloaded once on first use, then runs fully offline.
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
-SEMANTIC_MIN_SCORE = 0.25   # cutoff when the AI model is used
+SEMANTIC_MIN_SCORE = 0.30   # cutoff when the AI model is used
 KEYWORD_MIN_SCORE = 0.05    # cutoff for the backup keyword method
 
 _WORD = re.compile(r"[a-z0-9]+")
@@ -107,7 +107,7 @@ class SearchIndex:
 
     def relevance(self, score: float) -> str:
         # Rough labels only. They are an estimate, not a probability.
-        high, medium = (0.50, 0.35) if self._mode == "semantic" else (0.20, 0.10)
+        high, medium = (0.45, 0.33) if self._mode == "semantic" else (0.20, 0.10)
         if score >= high:
             return "High"
         if score >= medium:
