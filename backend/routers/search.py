@@ -4,7 +4,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from routers.scan import _last_scan
-from services.embeddings import index, tokenize
+from services.embeddings import index
+from services.rag import PROVIDER_NAME, ai_configured, generate_answer
 
 router = APIRouter()
 
@@ -14,6 +15,13 @@ class SearchRequest(BaseModel):
     mode: str = "meaning"          # "meaning" or "filename"
     category: str | None = None    # optional: only search inside one category
     limit: int = Field(default=10, ge=1, le=50)
+
+
+class AskRequest(BaseModel):
+    question: str
+    category: str | None = None
+    allow_external_ai: bool = False   # must be True before any text leaves the computer
+    limit: int = Field(default=5, ge=1, le=8)
 
 
 def _snippet(chunk: str, query: str, length: int = 350) -> str:
@@ -104,3 +112,79 @@ def search(request: SearchRequest):
         "results": results,
         "message": None if results else "No close matches found in your files.",
     }
+
+
+@router.post("/ask")
+def ask(request: AskRequest):
+    question = request.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Type a question first.")
+
+    def reply(status, answer=None, message=None, sources=None, sent=False):
+        return {
+            "question": question,
+            "status": status,
+            "answer": answer,
+            "message": message,
+            "sent_to_external_service": sent,
+            "provider": PROVIDER_NAME if sent else None,
+            "sent_files": sorted({s["name"] for s in sources}) if sent and sources else [],
+            "sources": sources or [],
+        }
+
+    files = _last_scan["files"]
+    if not files:
+        return reply("no_files", message="No files have been scanned yet. Scan a folder first.")
+
+    allowed = None
+    if request.category:
+        allowed = {f["id"] for f in files if f["category"] == request.category}
+
+    by_id = {f["id"]: f for f in files}
+    hits = index.search(question, request.limit, allowed)
+
+    if not hits:
+        return reply(
+            "not_enough_information",
+            message="I couldn't find enough information about that in your files.",
+        )
+
+    sources = []
+    for number, hit in enumerate(hits, 1):
+        f = by_id[hit["file_id"]]
+        sources.append({
+            "number": number,
+            "file_id": f["id"],
+            "name": f["name"],
+            "path": f["path"],
+            "category": f["category"],
+            "score": hit["score"],
+            "relevance": _relevance(hit["score"]),
+            "passage": hit["chunk_text"],
+        })
+
+    # Nothing leaves the computer unless the user explicitly allows it.
+    if not request.allow_external_ai:
+        return reply(
+            "passages_only",
+            message="AI answers are off, so nothing was sent anywhere. "
+                    "These are the most relevant passages from your files.",
+            sources=sources,
+        )
+
+    if not ai_configured():
+        return reply(
+            "ai_not_configured",
+            message="No API key was found, so nothing was sent. "
+                    "Add ANTHROPIC_API_KEY to the .env file and restart the server.",
+            sources=sources,
+        )
+
+    result = generate_answer(question, sources)
+
+    if result["status"] == "answered":
+        return reply("answered", answer=result["answer"], sources=sources, sent=True)
+    if result["status"] == "not_enough_information":
+        return reply("not_enough_information", message=result["message"],
+                     sources=sources, sent=True)
+    return reply("error", message=result["message"], sources=sources)
