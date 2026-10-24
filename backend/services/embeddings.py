@@ -6,7 +6,7 @@ from sklearn.metrics.pairwise import linear_kernel
 CHUNK_SIZE = 900        # characters per chunk
 CHUNK_OVERLAP = 150     # overlap so sentences aren't cut off between chunks
 MAX_CHUNKS_PER_FILE = 400
-MIN_SCORE = 0.03        # below this, a chunk is not considered a match
+MIN_SCORE = 0.05        # below this, a chunk is not considered a match
 
 _WORD = re.compile(r"[a-z0-9]+")
 
