@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from services.categorizer import categorize
 from services.extractor import extract_text
+from services.embeddings import index as search_index
 
 router = APIRouter()
 
@@ -121,6 +122,7 @@ def scan_folder(request: ScanRequest):
     })
     _texts.clear()
     _texts.update(texts)
+    search_index.build(files, texts)
 
     return {
         "scan_id": scan_id,
