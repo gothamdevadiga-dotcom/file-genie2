@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import duplicates, review, scan, search
+from routers import duplicates, organize, review, scan, search
 
 app = FastAPI(title="File Genie API")
 
@@ -19,6 +19,7 @@ app.include_router(scan.router)
 app.include_router(search.router)
 app.include_router(duplicates.router)
 app.include_router(review.router)
+app.include_router(organize.router)
 
 
 @app.get("/health")
