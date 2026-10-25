@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 
 # Reads the API key from the .env file in your project folder (never from code).
-load_dotenv()
+load_dotenv(override=True)
 
 PROVIDER_NAME = "Anthropic API"
 MAX_PASSAGE_CHARS = 900
