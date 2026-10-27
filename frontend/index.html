@@ -1,28 +1,41 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>File Genie</title>
-    <link rel="stylesheet" href="css/styles.css">
-  </head>
-  <body>
-    <aside>
-      <nav aria-label="Main navigation">
-        <a href="pages/dashboard.html">Dashboard</a>
-        <a href="pages/my-files.html">My Files</a>
-        <a href="pages/smart-categories.html">Smart Categories</a>
-        <a href="pages/ai-search.html">AI Search</a>
-        <a href="pages/duplicates.html">Duplicates</a>
-        <a href="pages/review-suggestions.html">Review Suggestions</a>
-        <a href="pages/activity.html">Activity</a>
-        <a href="pages/settings.html">Settings</a>
-      </nav>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src http://127.0.0.1:8000 http://localhost:8000">
+  <title>File Genie</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark" id="brandMark"></div>
+        <div class="brand-text">
+          <div class="brand-name">File Genie</div>
+          <div class="brand-sub">File organizer</div>
+        </div>
+      </div>
+
+      <nav class="nav" id="nav" aria-label="Main"></nav>
+
+      <button class="btn btn-primary btn-block" id="sidebarScan" type="button">Scan a folder</button>
     </aside>
-    <main>
-      <p>Not implemented yet</p>
-    </main>
-    <script src="js/api.js"></script>
-    <script src="js/app.js"></script>
-  </body>
+
+    <div class="main">
+      <header class="topbar">
+        <h1 id="pageTitle">Dashboard</h1>
+        <div class="status" id="status" data-state="checking">
+          <span class="dot"></span>
+          <span id="statusText">Checking backend…</span>
+        </div>
+      </header>
+      <main class="content" id="content"></main>
+    </div>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
 </html>

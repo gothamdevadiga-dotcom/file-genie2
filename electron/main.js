@@ -1,8 +1,10 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const path = require('path');
 
+let mainWindow = null;
+
 function createWindow() {
-  const window = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     webPreferences: {
@@ -12,7 +14,20 @@ function createWindow() {
     },
   });
 
-  window.loadFile(path.join(__dirname, '..', 'frontend', 'index.html'));
+  mainWindow.loadFile(path.join(__dirname, '..', 'frontend', 'index.html'));
 }
+
+// The page asks for a folder; only this file is allowed to open the Windows dialog.
+// It returns the chosen folder path, or null if the person cancels.
+ipcMain.handle('pick-folder', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choose a folder to scan',
+    properties: ['openDirectory'],
+  });
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+  return result.filePaths[0];
+});
 
 app.whenReady().then(createWindow);
