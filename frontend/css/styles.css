@@ -318,3 +318,42 @@ button { font-family: inherit; font-size: inherit; }
   .files-layout { flex-direction: column; }
   .detail { width: 100%; }
 }
+
+/* ---------- Smart Categories ---------- */
+
+.cat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+.cat-card { display: flex; flex-direction: column; gap: 12px; }
+.cat-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.cat-list {
+  flex: 1; margin: 0; padding: 0; list-style: none;
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 13px; color: var(--muted);
+}
+.cat-list li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cat-list .more { font-style: normal; color: #9CA3AF; }
+.cat-card .btn { align-self: flex-start; }
+
+/* ---------- Duplicates, Search, Ask ---------- */
+
+.section-title { margin-top: 8px; font-size: 14px; font-weight: 600; }
+.group-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.group-list { list-style: none; margin: 16px 0 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+
+.ask-row { display: flex; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
+.grow { flex: 1; min-width: 200px; }
+textarea.input { height: auto; padding: 10px 12px; resize: vertical; line-height: 1.5; }
+.check { display: flex; gap: 10px; align-items: flex-start; margin-top: 14px; font-size: 13px; color: #374151; }
+.check input { margin-top: 3px; }
+
+.results { list-style: none; margin: 12px 0 0; padding: 0; }
+.result { display: flex; flex-direction: column; gap: 6px; padding: 16px 0; border-top: 1px solid var(--border); }
+.result:first-child { padding-top: 0; border-top: 0; }
+.result-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.snippet { margin: 0; font-size: 13px; color: #374151; word-break: break-word; white-space: pre-wrap; }
+.btn-small { height: 28px; padding: 0 12px; font-size: 13px; align-self: flex-start; }
+.answer { margin-top: 8px; font-size: 15px; line-height: 1.6; white-space: pre-wrap; }
+.passage summary { cursor: pointer; font-size: 13px; color: var(--primary); }
+.passage .snippet { margin-top: 8px; }
+
+.detail-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.detail-actions + .fine:empty { display: none; }

@@ -30,20 +30,16 @@ function svg(name) {
 const PAGES = [
   { id: "dashboard", label: "Dashboard", icon: "dashboard", render: renderDashboard, after: loadLastScan },
   { id: "files", label: "My Files", icon: "files", render: renderFiles, after: openFiles },
-  { id: "categories", label: "Smart Categories", icon: "categories",
-    empty: "No categories yet", text: "Categories appear after your first scan. You can correct any category you disagree with." },
-  { id: "search", label: "AI Search", icon: "search",
-    empty: "Nothing to search yet", text: "Once a folder is scanned, you can find files by name or by what they are about." },
-  { id: "ask", label: "Ask Files", icon: "ask",
-    empty: "Nothing to ask yet", text: "After a scan, ask a question and get an answer that names the files it came from." },
-  { id: "duplicates", label: "Duplicates", icon: "duplicates",
-    empty: "No duplicates found", text: "Run a scan to look for exact copies and very similar files. Nothing is ever deleted for you." },
+  { id: "categories", label: "Smart Categories", icon: "categories", render: renderCategories, after: openCategories },
+  { id: "search", label: "AI Search", icon: "search", render: renderSearch, after: bindSearch },
+  { id: "ask", label: "Ask Files", icon: "ask", render: renderAsk, after: bindAsk },
+  { id: "duplicates", label: "Duplicates", icon: "duplicates", render: renderDuplicates, after: openDuplicates },
   { id: "review", label: "Review Suggestions", icon: "review",
-    empty: "No suggestions to review", text: "After a scan, you approve or reject each suggested move before any file changes." },
+    empty: "Review Suggestions isn't built yet", text: "This screen will let you approve or reject each suggested move before any file changes." },
   { id: "activity", label: "Activity", icon: "activity",
-    empty: "No activity yet", text: "Moves you approve will be listed here, and you can undo them." },
+    empty: "Activity isn't built yet", text: "This screen will list the moves you approve and let you undo them." },
   { id: "settings", label: "Settings", icon: "settings",
-    empty: "Settings", text: "Options for AI answers and clearing File Genie's saved data will go here." },
+    empty: "Settings isn't built yet", text: "This screen will hold the AI answers on/off option and a button to clear File Genie's saved data." },
   { id: "scan", label: "Scan a folder", icon: "files", hidden: true,
     render: renderScan, after: bindScan },
 ];
@@ -79,7 +75,7 @@ function renderPlaceholder(page) {
         <div class="empty-icon">${svg(page.icon)}</div>
         <h2>${page.empty}</h2>
         <p>${page.text}</p>
-        ${page.id === "scan" ? "" : '<button class="btn btn-primary" type="button" data-go="scan">Scan a folder</button>'}
+        <button class="btn btn-primary" type="button" data-go="files">Open My Files</button>
       </section>
     </div>`;
 }
@@ -213,7 +209,24 @@ async function runScan() {
       : err.message;
   }
 
-  if (currentPage === "scan") go("scan");
+  if (scan.phase === "done" && scan.result.file_count > 0) {
+    // Forget the previous scan's view so My Files and Categories load the new results.
+    library.data = null;
+    library.selectedId = null;
+    library.preview = null;
+    library.type = "all";
+    library.category = "all";
+    library.query = "";
+    cats.data = null;
+    dupes.data = null;
+    searchState.data = null;
+    searchState.phase = "idle";
+    ask.data = null;
+    ask.phase = "idle";
+  }
+  if (currentPage === "scan") {
+    go(scan.phase === "done" && scan.result.file_count > 0 ? "files" : "scan");
+  }
 }
 
 // ---------- Dashboard: last scan ----------
@@ -401,6 +414,11 @@ function paintDetail() {
       <dt>Modified</dt><dd>${formatDate(f.modified)}</dd>
       <dt>Location</dt><dd class="mono">${esc(f.path)}</dd>
     </dl>
+    <div class="detail-actions">
+      <button class="btn btn-primary" type="button" id="openFile">Open file</button>
+      <button class="btn" type="button" id="revealFile">Show in folder</button>
+    </div>
+    <p class="fine" id="openMsg"></p>
     <div class="cat-edit">
       <label for="catInput">Change category</label>
       <div class="cat-row">
@@ -415,11 +433,23 @@ function paintDetail() {
     <button class="btn" type="button" id="detailClose">Close</button>`;
   box.hidden = false;
   document.getElementById("catSave").addEventListener("click", () => saveCategory(f.id));
+  document.getElementById("openFile").addEventListener("click", () => fileAction("openFile", f.path));
+  document.getElementById("revealFile").addEventListener("click", () => fileAction("revealFile", f.path));
   document.getElementById("detailClose").addEventListener("click", () => {
     library.selectedId = null;
     paintTable();
     paintDetail();
   });
+}
+
+async function fileAction(kind, filePath) {
+  const msg = document.getElementById("openMsg");
+  if (!window.fileGenie || !window.fileGenie[kind]) {
+    msg.textContent = "This only works inside the File Genie app. Close it and start it again with npm start.";
+    return;
+  }
+  const result = await window.fileGenie[kind](filePath);
+  msg.textContent = result.ok ? "" : result.message;
 }
 
 async function selectFile(id) {
@@ -491,6 +521,446 @@ async function openFiles() {
     content.querySelectorAll("[data-go]").forEach(btn => btn.addEventListener("click", () => go(btn.dataset.go)));
     bindFilesToolbar();
   }
+}
+
+// ---------- Smart Categories ----------
+
+const cats = { data: null, error: null };
+
+function renderCategories() {
+  if (cats.error) {
+    return `<div class="page"><div class="note note-error"><span>${esc(cats.error)}</span></div></div>`;
+  }
+  if (!cats.data) {
+    return '<div class="page"><section class="card progress"><span class="spinner" aria-hidden="true"></span><p class="card-text">Loading categories…</p></section></div>';
+  }
+  const files = cats.data.files;
+  if (files.length === 0) {
+    return `
+      <div class="page">
+        <section class="card empty">
+          <div class="empty-icon">${svg("categories")}</div>
+          <h2>No categories yet</h2>
+          <p>Scan a folder first. Categories are made from the files in your latest scan.</p>
+          <button class="btn btn-primary" type="button" data-go="scan">Scan a folder</button>
+        </section>
+      </div>`;
+  }
+
+  const groups = {};
+  files.forEach(f => { (groups[categoryOf(f)] = groups[categoryOf(f)] || []).push(f); });
+  const names = Object.keys(groups).sort((a, b) => {
+    if (a === "Uncategorized") return 1;
+    if (b === "Uncategorized") return -1;
+    return groups[b].length - groups[a].length;
+  });
+
+  const cards = names.map(name => {
+    const list = groups[name];
+    const examples = list.slice(0, 3).map(f => `<li>${esc(f.name)}</li>`).join("");
+    const more = list.length > 3 ? `<li class="more">and ${list.length - 3} more</li>` : "";
+    return `
+      <section class="card cat-card">
+        <div class="cat-head">
+          <h2 class="card-title">${esc(name)}</h2>
+          <span class="badge">${list.length} ${list.length === 1 ? "file" : "files"}</span>
+        </div>
+        <ul class="cat-list">${examples}${more}</ul>
+        <button class="btn" type="button" data-cat="${esc(name)}">View files</button>
+      </section>`;
+  }).join("");
+
+  return `
+    <div class="page page-wide">
+      <p class="card-text">Categories are picked by simple keyword rules, not AI. If one is wrong, open the file in My Files and change it.</p>
+      <div class="cat-grid">${cards}</div>
+    </div>`;
+}
+
+function bindCategories() {
+  content.querySelectorAll("[data-cat]").forEach(btn => btn.addEventListener("click", () => {
+    library.category = btn.dataset.cat;
+    library.type = "all";
+    library.query = "";
+    library.selectedId = null;
+    go("files");
+  }));
+}
+
+async function openCategories() {
+  bindCategories();
+  try {
+    const res = await fetch(API + "/files");
+    if (!res.ok) throw new Error("The backend returned an error (" + res.status + ").");
+    cats.data = await res.json();
+    cats.error = null;
+  } catch (err) {
+    cats.error = err instanceof TypeError
+      ? "Couldn't reach the backend. Check that it is running, then reopen Smart Categories."
+      : err.message;
+  }
+  if (currentPage === "categories") {
+    content.innerHTML = renderCategories();
+    content.querySelectorAll("[data-go]").forEach(btn => btn.addEventListener("click", () => go(btn.dataset.go)));
+    bindCategories();
+  }
+}
+
+// ---------- Shared helpers for the data screens ----------
+
+async function api(path, options) {
+  try {
+    const res = await fetch(API + path, options);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(typeof data.detail === "string"
+        ? data.detail
+        : "The backend returned an error (" + res.status + "). If it just restarted, wait a few seconds and try again.");
+    }
+    return data;
+  } catch (err) {
+    if (err instanceof TypeError) throw new Error("Couldn't reach the backend. Check that it is running.");
+    throw err;
+  }
+}
+
+function postJson(path, body) {
+  return api(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// Redraws a page after its data changed, without re-running its load hook.
+function paintPage(id, render, bind) {
+  if (currentPage !== id) return;
+  content.innerHTML = render();
+  content.querySelectorAll("[data-go]").forEach(btn => btn.addEventListener("click", () => go(btn.dataset.go)));
+  bind();
+}
+
+function loadingCard(text) {
+  return `<section class="card progress"><span class="spinner" aria-hidden="true"></span><p class="card-text">${text}</p></section>`;
+}
+
+function errorNote(text) {
+  return `<div class="note note-error"><span>${esc(text)}</span></div>`;
+}
+
+function emptyCard(icon, title, text) {
+  return `<section class="card empty"><div class="empty-icon">${svg(icon)}</div><h2>${title}</h2><p>${text}</p><button class="btn btn-primary" type="button" data-go="scan">Scan a folder</button></section>`;
+}
+
+function showInFiles(name) {
+  library.query = name;
+  library.type = "all";
+  library.category = "all";
+  library.selectedId = null;
+  go("files");
+}
+
+// ---------- Duplicates ----------
+
+const dupes = { data: null, error: null, loading: false, threshold: "0.65" };
+
+function dupGroup(g, exact) {
+  let badge = '<span class="badge">Exact copy</span>';
+  if (!exact) {
+    const lo = Math.round(g.similarity_lowest * 100);
+    const hi = Math.round(g.similarity_highest * 100);
+    badge = `<span class="badge">${lo === hi ? lo : lo + " to " + hi}% similar text</span>`;
+  }
+  const extra = exact ? `<p class="fine">${formatSize(g.extra_space_bytes)} of extra space used by the copies.</p>` : "";
+  const items = g.files.map(f => `
+    <li>
+      <div class="file-name">${esc(f.name)}</div>
+      <div class="file-sub mono">${esc(f.folder)}</div>
+      <div class="file-sub">${formatSize(f.size_bytes)}, modified ${formatDate(f.modified)}</div>
+    </li>`).join("");
+  return `
+    <section class="card">
+      <div class="group-head"><h3 class="card-title">${g.file_count} ${exact ? "identical" : "similar"} files</h3>${badge}</div>
+      ${extra}
+      <ul class="group-list">${items}</ul>
+    </section>`;
+}
+
+function renderDuplicates() {
+  const levels = [["0.5", "Loose"], ["0.65", "Balanced"], ["0.8", "Strict"]];
+  const options = levels.map(([v, label]) =>
+    `<option value="${v}"${v === dupes.threshold ? " selected" : ""}>${label}</option>`).join("");
+  const d = dupes.data;
+
+  let body;
+  if (dupes.loading) {
+    body = loadingCard("Comparing your files…");
+  } else if (dupes.error) {
+    body = errorNote(dupes.error);
+  } else if (!d || !d.scanned_files) {
+    body = emptyCard("duplicates", "Nothing to compare yet", "Scan a folder first, then come back to look for duplicate files.");
+  } else {
+    const total = d.exact_count + d.similar_count;
+    body = `<div class="note"><span>Checked ${d.scanned_files} files. ${esc(d.note)}</span></div>`;
+    if (total === 0) body += '<div class="note"><span>No duplicates found.</span></div>';
+    if (d.exact_count) {
+      body += `<h2 class="section-title">Exact copies (${d.exact_count})</h2>` + d.exact_groups.map(g => dupGroup(g, true)).join("");
+    }
+    if (d.similar_count) {
+      body += `<h2 class="section-title">Similar files (${d.similar_count})</h2>
+        <p class="fine">Similar means the text is alike, not that it is the same file. Check them before deciding anything.</p>`
+        + d.similar_groups.map(g => dupGroup(g, false)).join("");
+    }
+  }
+
+  return `
+    <div class="page">
+      <div class="toolbar">
+        <label class="fine" for="dupLevel">Similarity level</label>
+        <select class="input" id="dupLevel">${options}</select>
+      </div>
+      ${body}
+    </div>`;
+}
+
+function bindDuplicates() {
+  const select = document.getElementById("dupLevel");
+  if (select) select.addEventListener("change", () => {
+    dupes.threshold = select.value;
+    loadDuplicates();
+  });
+}
+
+async function loadDuplicates() {
+  dupes.loading = true;
+  dupes.error = null;
+  paintPage("duplicates", renderDuplicates, bindDuplicates);
+  try {
+    dupes.data = await api("/duplicates?similarity_threshold=" + dupes.threshold);
+  } catch (err) {
+    dupes.error = err.message;
+  }
+  dupes.loading = false;
+  paintPage("duplicates", renderDuplicates, bindDuplicates);
+}
+
+function openDuplicates() {
+  bindDuplicates();
+  loadDuplicates();
+}
+
+// ---------- AI Search ----------
+
+const searchState = { query: "", mode: "both", phase: "idle", data: null, error: null };
+
+function matchBadges(r) {
+  const tags = [];
+  if (r.matchedBy === "name" || r.matchedBy === "both") tags.push("Name match");
+  if (r.matchedBy === "content" || r.matchedBy === "both") tags.push("Content match");
+  const list = tags.map(t => `<span class="badge">${t}</span>`);
+  if (r.relevance) list.push(`<span class="badge">${esc(r.relevance)} relevance</span>`);
+  return list.join(" ");
+}
+
+// Runs the file-name search and the meaning search together and merges them,
+// so a file shows up if its name OR its content matches.
+async function searchBoth(query) {
+  const [byName, byMeaning] = await Promise.allSettled([
+    postJson("/search", { query, mode: "filename", limit: 20 }),
+    postJson("/search", { query, mode: "meaning", limit: 10 }),
+  ]);
+  if (byName.status === "rejected" && byMeaning.status === "rejected") throw byName.reason;
+
+  const merged = new Map();
+  if (byName.status === "fulfilled") {
+    byName.value.results.forEach(r => merged.set(r.id, { ...r, matchedBy: "name" }));
+  }
+  if (byMeaning.status === "fulfilled") {
+    byMeaning.value.results.forEach(r => {
+      const existing = merged.get(r.id);
+      if (existing) {
+        merged.set(r.id, { ...existing, snippet: r.snippet, relevance: r.relevance, matchedBy: "both" });
+      } else {
+        merged.set(r.id, { ...r, matchedBy: "content" });
+      }
+    });
+  }
+  const results = [...merged.values()];
+  return {
+    count: results.length,
+    results,
+    method: "names and content, runs locally",
+    message: "No matches in file names or content.",
+  };
+}
+
+function renderSearchResults(d) {
+  if (!d.count) return `<div class="note"><span>${esc(d.message || "No results.")}</span></div>`;
+  const rows = d.results.map(r => `
+    <li class="result">
+      <div class="result-head">
+        <span class="file-name">${esc(r.name)}</span>
+        ${matchBadges(r)}
+      </div>
+      <div class="file-sub">${esc(r.type)}, ${esc(r.category || "Uncategorized")}</div>
+      ${r.snippet ? `<p class="snippet">${esc(r.snippet)}</p>` : ""}
+      <div class="file-sub mono">${esc(r.path)}</div>
+      <button class="btn btn-small" type="button" data-show="${esc(r.name)}">Show in My Files</button>
+    </li>`).join("");
+  return `
+    <section class="card">
+      <p class="fine">${d.count} ${d.count === 1 ? "result" : "results"}${d.method ? ", " + esc(d.method) : ""}</p>
+      <ul class="results">${rows}</ul>
+    </section>`;
+}
+
+function renderSearch() {
+  const busy = searchState.phase === "searching";
+  let body = "";
+  if (busy) body = loadingCard("Searching…");
+  else if (searchState.error) body = errorNote(searchState.error);
+  else if (searchState.data) body = renderSearchResults(searchState.data);
+
+  const mode = m => (searchState.mode === m ? " selected" : "");
+  return `
+    <div class="page">
+      <section class="card">
+        <h2 class="card-title">Search your files</h2>
+        <p class="card-text">Names and content checks both at once. By meaning finds files about a topic, even when the words differ. By file name matches words in the name. Searching happens on your computer.</p>
+        <div class="ask-row">
+          <input class="input grow" id="searchQuery" type="search" placeholder="What are you looking for?" aria-label="Search" value="${esc(searchState.query)}" ${busy ? "disabled" : ""}>
+          <select class="input" id="searchMode" aria-label="Search type" ${busy ? "disabled" : ""}>
+            <option value="both"${mode("both")}>Names and content</option>
+            <option value="meaning"${mode("meaning")}>By meaning</option>
+            <option value="filename"${mode("filename")}>By file name</option>
+          </select>
+          <button class="btn btn-primary" type="button" id="searchBtn" ${busy ? "disabled" : ""}>Search</button>
+        </div>
+      </section>
+      ${body}
+    </div>`;
+}
+
+async function runSearch() {
+  searchState.query = document.getElementById("searchQuery").value.trim();
+  searchState.mode = document.getElementById("searchMode").value;
+  searchState.data = null;
+  if (!searchState.query) {
+    searchState.phase = "error";
+    searchState.error = "Type something to search for.";
+    paintPage("search", renderSearch, bindSearch);
+    return;
+  }
+  searchState.phase = "searching";
+  searchState.error = null;
+  paintPage("search", renderSearch, bindSearch);
+  try {
+    searchState.data = searchState.mode === "both"
+      ? await searchBoth(searchState.query)
+      : await postJson("/search", { query: searchState.query, mode: searchState.mode, limit: 10 });
+    searchState.phase = "done";
+  } catch (err) {
+    searchState.phase = "error";
+    searchState.error = err.message;
+  }
+  paintPage("search", renderSearch, bindSearch);
+}
+
+function bindSearch() {
+  const input = document.getElementById("searchQuery");
+  const btn = document.getElementById("searchBtn");
+  if (btn) btn.addEventListener("click", runSearch);
+  if (input) input.addEventListener("keydown", e => { if (e.key === "Enter") runSearch(); });
+  content.querySelectorAll("[data-show]").forEach(b => b.addEventListener("click", () => showInFiles(b.dataset.show)));
+}
+
+// ---------- Ask Files ----------
+
+const ask = { question: "", useAi: false, phase: "idle", data: null, error: null };
+
+// Escapes the text first, then turns **bold** into real bold, so nothing can inject HTML.
+function formatAnswer(text) {
+  return esc(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+}
+
+function renderAnswer(d) {
+  const main = d.status === "answered"
+    ? `<section class="card"><h2 class="card-title">Answer</h2><p class="answer">${formatAnswer(d.answer)}</p></section>`
+    : `<div class="note ${d.status === "error" ? "note-error" : ""}"><span>${esc(d.message || "")}</span></div>`;
+
+  let disclosure = "Nothing left your computer.";
+  if (d.status === "error") {
+    disclosure = "The AI request failed, so File Genie can't confirm whether any passages reached the service.";
+  } else if (d.sent_to_external_service) {
+    disclosure = `Sent to ${esc(d.provider)}: passages from ${d.sent_files.map(esc).join(", ")}.`;
+  }
+
+  const sources = (d.sources || []).map(s => `
+    <li class="result">
+      <div class="result-head">
+        <span class="file-name">[${s.number}] ${esc(s.name)}</span>
+        ${s.relevance ? `<span class="badge">${esc(s.relevance)}</span>` : ""}
+      </div>
+      <details class="passage"><summary>Show passage</summary><p class="snippet">${esc(s.passage)}</p></details>
+      <div class="file-sub mono">${esc(s.path)}</div>
+    </li>`).join("");
+  const list = sources
+    ? `<section class="card"><h2 class="card-title">Passages used</h2><ul class="results">${sources}</ul></section>` : "";
+
+  return main + `<div class="note">${svg("shield")}<span>${disclosure}</span></div>` + list;
+}
+
+function renderAsk() {
+  const busy = ask.phase === "asking";
+  let body = "";
+  if (busy) body = loadingCard(ask.useAi ? "Finding passages and asking Claude…" : "Finding the most relevant passages…");
+  else if (ask.error) body = errorNote(ask.error);
+  else if (ask.data) body = renderAnswer(ask.data);
+
+  return `
+    <div class="page">
+      <section class="card">
+        <h2 class="card-title">Ask about your files</h2>
+        <p class="card-text">File Genie finds the passages in your scanned files that best match your question.</p>
+        <div class="ask-row">
+          <textarea class="input grow" id="askQuestion" rows="3" placeholder="For example: What does Unit 1 cover?" aria-label="Your question" ${busy ? "disabled" : ""}>${esc(ask.question)}</textarea>
+        </div>
+        <label class="check">
+          <input type="checkbox" id="askAi" ${ask.useAi ? "checked" : ""} ${busy ? "disabled" : ""}>
+          <span>Let Claude write an answer from those passages. Only the matching passages are sent to Anthropic, never whole files, and you will see which files they came from.</span>
+        </label>
+        <div class="ask-row"><button class="btn btn-primary" type="button" id="askBtn" ${busy ? "disabled" : ""}>Ask</button></div>
+      </section>
+      ${body}
+    </div>`;
+}
+
+async function runAsk() {
+  ask.question = document.getElementById("askQuestion").value.trim();
+  ask.useAi = document.getElementById("askAi").checked;
+  ask.data = null;
+  if (!ask.question) {
+    ask.phase = "error";
+    ask.error = "Type a question first.";
+    paintPage("ask", renderAsk, bindAsk);
+    return;
+  }
+  ask.phase = "asking";
+  ask.error = null;
+  paintPage("ask", renderAsk, bindAsk);
+  try {
+    ask.data = await postJson("/ask", { question: ask.question, allow_external_ai: ask.useAi, limit: 5 });
+    ask.phase = "done";
+  } catch (err) {
+    ask.phase = "error";
+    ask.error = err.message;
+  }
+  paintPage("ask", renderAsk, bindAsk);
+}
+
+function bindAsk() {
+  const btn = document.getElementById("askBtn");
+  if (btn) btn.addEventListener("click", runAsk);
 }
 
 // ---------- Navigation ----------
