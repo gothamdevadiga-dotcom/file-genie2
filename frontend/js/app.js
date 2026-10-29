@@ -34,12 +34,9 @@ const PAGES = [
   { id: "search", label: "AI Search", icon: "search", render: renderSearch, after: bindSearch },
   { id: "ask", label: "Ask Files", icon: "ask", render: renderAsk, after: bindAsk },
   { id: "duplicates", label: "Duplicates", icon: "duplicates", render: renderDuplicates, after: openDuplicates },
-  { id: "review", label: "Review Suggestions", icon: "review",
-    empty: "Review Suggestions isn't built yet", text: "This screen will let you approve or reject each suggested move before any file changes." },
-  { id: "activity", label: "Activity", icon: "activity",
-    empty: "Activity isn't built yet", text: "This screen will list the moves you approve and let you undo them." },
-  { id: "settings", label: "Settings", icon: "settings",
-    empty: "Settings isn't built yet", text: "This screen will hold the AI answers on/off option and a button to clear File Genie's saved data." },
+  { id: "review", label: "Review Suggestions", icon: "review", render: renderReview, after: openReview },
+  { id: "activity", label: "Activity", icon: "activity", render: renderActivity, after: openActivity },
+  { id: "settings", label: "Settings", icon: "settings", render: renderSettings, after: openSettings },
   { id: "scan", label: "Scan a folder", icon: "files", hidden: true,
     render: renderScan, after: bindScan },
 ];
@@ -223,6 +220,12 @@ async function runScan() {
     searchState.phase = "idle";
     ask.data = null;
     ask.phase = "idle";
+    review.data = null;
+    org.plan = null;
+    org.result = null;
+    org.phase = "idle";
+    org.error = null;
+    activity.data = null;
   }
   if (currentPage === "scan") {
     go(scan.phase === "done" && scan.result.file_count > 0 ? "files" : "scan");
@@ -963,6 +966,361 @@ function bindAsk() {
   if (btn) btn.addEventListener("click", runAsk);
 }
 
+// ---------- Review Suggestions and moving files ----------
+
+const review = { data: null, error: null, loading: false, scope: "needs_review", includeMedium: false };
+const org = { dest: null, includeUndecided: false, phase: "idle", plan: null, result: null, error: null };
+
+const DECISION_LABEL = { approve: "Approved", reject: "Rejected", modify: "Changed" };
+
+function reviewCard(it) {
+  const flags = it.flags.map(f => `<span class="badge badge-warn">${esc(f)}</span>`).join(" ");
+  const decided = it.decision
+    ? `<span class="badge">${DECISION_LABEL[it.decision.action] || ""}${it.decision.category ? ": " + esc(it.decision.category) : ""}</span>` : "";
+  const level = it.current_category && it.category_level ? ` (${esc(it.category_level)})` : "";
+  const chips = (it.candidates || []).slice(0, 3).map(c =>
+    `<button class="chip" type="button" data-pick="${it.id}" data-cat="${esc(c.category)}">${esc(c.category)}</button>`).join("");
+  const noCat = !it.current_category || it.current_category === "Uncategorized";
+  return `
+    <section class="card review-card">
+      <div class="group-head">
+        <div>
+          <h3 class="card-title">${esc(it.name)}</h3>
+          <p class="file-sub">Category: ${esc(it.current_category || "none")}${level}</p>
+        </div>
+        ${decided}
+      </div>
+      ${flags ? `<div class="chips">${flags}</div>` : ""}
+      ${it.reason ? `<p class="fine">${esc(it.reason)}</p>` : ""}
+      ${chips ? `<div class="chips"><span class="fine">Other options:</span>${chips}</div>` : ""}
+      <div class="review-actions">
+        <button class="btn btn-primary btn-small" type="button" data-act="approve" data-id="${it.id}" ${noCat ? "disabled" : ""}>Approve</button>
+        <button class="btn btn-small" type="button" data-act="reject" data-id="${it.id}">Reject</button>
+        ${it.decision ? `<button class="btn btn-small" type="button" data-act="undo" data-id="${it.id}">Undo decision</button>` : ""}
+        <input class="input" data-input="${it.id}" maxlength="50" placeholder="Other category" aria-label="Other category">
+        <button class="btn btn-small" type="button" data-set="${it.id}">Set category</button>
+      </div>
+      <p class="fine" data-msg="${it.id}"></p>
+    </section>`;
+}
+
+function renderPlan(p) {
+  const skipped = p.skipped_count
+    ? `<details class="passage"><summary>${p.skipped_count} skipped</summary><ul class="plan-list">${
+        p.skipped.map(x => `<li>${esc(x.name)}: ${esc(x.reason)}</li>`).join("")}</ul></details>` : "";
+  const n = p.not_included || {};
+  const left = [];
+  if (n.rejected) left.push(n.rejected + " rejected");
+  if (n.not_reviewed) left.push(n.not_reviewed + " not reviewed yet");
+  if (n.no_category) left.push(n.no_category + " without a category");
+  const leftText = left.length ? `<p class="fine">Not included: ${left.join(", ")}.</p>` : "";
+
+  if (p.move_count === 0) {
+    return `<div class="plan"><div class="note"><span>Nothing to move. Approve some files first, or tick the box to include files you haven't reviewed.</span></div>${leftText}${skipped}</div>`;
+  }
+  const rows = p.moves.map(m => `<li><strong>${esc(m.name)}</strong> goes to <span class="mono">${esc(m.category)}</span></li>`).join("");
+  return `
+    <div class="plan">
+      <p><strong>${p.move_count} ${p.move_count === 1 ? "file" : "files"}</strong> will be moved into folders inside <span class="mono">${esc(p.destination_root)}</span>. Nothing has moved yet.</p>
+      <ul class="plan-list">${rows}</ul>
+      ${leftText}${skipped}
+      <div class="ask-row">
+        <button class="btn btn-primary" type="button" id="orgConfirm">Confirm and move ${p.move_count} ${p.move_count === 1 ? "file" : "files"}</button>
+        <button class="btn" type="button" id="orgCancel">Cancel</button>
+      </div>
+    </div>`;
+}
+
+function renderMoveResult(r) {
+  const failed = r.results.filter(x => x.status === "failed")
+    .map(x => `<li>${esc(x.name)}: ${esc(x.message || "failed")}</li>`).join("");
+  return `
+    <div class="note">${svg("shield")}<span>Moved ${r.moved} ${r.moved === 1 ? "file" : "files"}${r.failed ? ", " + r.failed + " failed" : ""}. You can undo this from Activity.</span></div>
+    ${failed ? `<ul class="plan-list">${failed}</ul>` : ""}
+    <div class="ask-row"><button class="btn" type="button" data-go="activity">Open Activity</button></div>`;
+}
+
+function renderOrganizeCard() {
+  const busy = org.phase === "planning" || org.phase === "moving";
+  let body = "";
+  if (org.error) body += errorNote(org.error);
+  if (org.phase === "planning") body += loadingCard("Building the plan…");
+  if (org.phase === "moving") body += loadingCard("Moving files…");
+  if (org.phase === "planned" && org.plan) body += renderPlan(org.plan);
+  if (org.phase === "done" && org.result) body += renderMoveResult(org.result);
+  const dest = org.dest
+    ? `<span class="path">${esc(org.dest)}</span>` : '<span class="path path-empty">No destination chosen</span>';
+  return `
+    <section class="card">
+      <h2 class="card-title">Move files into category folders</h2>
+      <p class="card-text">Approved or changed files are moved into one folder per category inside the destination you choose. Nothing is overwritten or deleted, and you see the full plan before anything moves.</p>
+      <div class="picker">
+        <div class="picker-path">${dest}</div>
+        <button class="btn" type="button" id="orgPick" ${busy ? "disabled" : ""}>Choose destination</button>
+      </div>
+      <label class="check"><input type="checkbox" id="orgUndecided" ${org.includeUndecided ? "checked" : ""} ${busy ? "disabled" : ""}><span>Also include categorized files I haven't reviewed</span></label>
+      <div class="ask-row"><button class="btn btn-primary" type="button" id="orgPlan" ${!org.dest || busy ? "disabled" : ""}>Preview moves</button></div>
+      ${body ? `<div class="plan-wrap">${body}</div>` : ""}
+    </section>`;
+}
+
+function renderReview() {
+  const d = review.data;
+  if (review.error && !d) return `<div class="page">${errorNote(review.error)}</div>`;
+  if (!d) return `<div class="page">${loadingCard("Loading suggestions…")}</div>`;
+  if (!d.total_files) {
+    return `<div class="page">${emptyCard("review", "Nothing to review yet", "Scan a folder first. Files that need a decision will show up here.")}</div>`;
+  }
+  const sel = v => (review.scope === v ? " selected" : "");
+  const head = `
+    <div class="toolbar">
+      <select class="input" id="revScope" aria-label="Which files">
+        <option value="needs_review"${sel("needs_review")}>Needs review (${d.needs_review})</option>
+        <option value="all"${sel("all")}>All files (${d.total_files})</option>
+      </select>
+      <label class="check inline"><input type="checkbox" id="revMedium" ${review.includeMedium ? "checked" : ""}><span>Include medium confidence</span></label>
+      <span class="toolbar-count">${d.approved} approved, ${d.modified} changed, ${d.rejected} rejected</span>
+    </div>`;
+  const list = d.items.length
+    ? d.items.map(reviewCard).join("")
+    : `<div class="note"><span>${esc(d.message || "Nothing needs your review right now.")}</span></div>`;
+  return `<div class="page">${review.error ? errorNote(review.error) : ""}${renderOrganizeCard()}${head}${list}</div>`;
+}
+
+async function loadReview() {
+  review.loading = true;
+  review.error = null;
+  paintPage("review", renderReview, bindReview);
+  try {
+    review.data = await api("/review?scope=" + review.scope + "&include_medium=" + review.includeMedium);
+  } catch (err) {
+    review.error = err.message;
+  }
+  review.loading = false;
+  paintPage("review", renderReview, bindReview);
+}
+
+async function decide(id, action, category) {
+  const msg = content.querySelector('[data-msg="' + id + '"]');
+  try {
+    await postJson("/review/" + id + "/decision", { action, category: category || null });
+    library.data = null;
+    cats.data = null;
+    await loadReview();
+  } catch (err) {
+    if (msg) msg.textContent = err.message;
+  }
+}
+
+function dropViewsAfterMove() {
+  library.data = null;
+  cats.data = null;
+  dupes.data = null;
+  activity.data = null;
+}
+
+async function makePlan() {
+  org.phase = "planning";
+  org.error = null;
+  org.result = null;
+  paintPage("review", renderReview, bindReview);
+  try {
+    org.plan = await postJson("/organize/plan", { destination_root: org.dest, include_undecided: org.includeUndecided });
+    org.phase = "planned";
+  } catch (err) {
+    org.phase = "idle";
+    org.error = err.message;
+  }
+  paintPage("review", renderReview, bindReview);
+}
+
+async function confirmMove() {
+  const plan = org.plan;
+  if (!plan || !window.confirm("Move " + plan.move_count + " files now? You can undo it from Activity.")) return;
+  org.phase = "moving";
+  org.error = null;
+  paintPage("review", renderReview, bindReview);
+  try {
+    org.result = await postJson("/organize/execute", { plan_id: plan.plan_id, confirm: true, move_count: plan.move_count });
+    org.phase = "done";
+    org.plan = null;
+    dropViewsAfterMove();
+  } catch (err) {
+    org.phase = "idle";
+    org.error = err.message;
+  }
+  await loadReview();
+}
+
+function bindReview() {
+  const $ = id => document.getElementById(id);
+  if ($("revScope")) $("revScope").addEventListener("change", e => { review.scope = e.target.value; loadReview(); });
+  if ($("revMedium")) $("revMedium").addEventListener("change", e => { review.includeMedium = e.target.checked; loadReview(); });
+  if ($("orgUndecided")) $("orgUndecided").addEventListener("change", e => { org.includeUndecided = e.target.checked; org.plan = null; org.phase = "idle"; });
+  if ($("orgPick")) $("orgPick").addEventListener("click", async () => {
+    if (!window.fileGenie) { org.error = "The folder picker only works inside the File Genie app window."; paintPage("review", renderReview, bindReview); return; }
+    const folder = await window.fileGenie.pickFolder();
+    if (folder) { org.dest = folder; org.plan = null; org.phase = "idle"; org.error = null; org.result = null; paintPage("review", renderReview, bindReview); }
+  });
+  if ($("orgPlan")) $("orgPlan").addEventListener("click", makePlan);
+  if ($("orgConfirm")) $("orgConfirm").addEventListener("click", confirmMove);
+  if ($("orgCancel")) $("orgCancel").addEventListener("click", () => { org.plan = null; org.phase = "idle"; paintPage("review", renderReview, bindReview); });
+
+  content.querySelectorAll("[data-act]").forEach(b => b.addEventListener("click", () => decide(Number(b.dataset.id), b.dataset.act)));
+  content.querySelectorAll("[data-pick]").forEach(b => b.addEventListener("click", () => decide(Number(b.dataset.pick), "modify", b.dataset.cat)));
+  content.querySelectorAll("[data-set]").forEach(b => b.addEventListener("click", () => {
+    const id = b.dataset.set;
+    const value = content.querySelector('[data-input="' + id + '"]').value.trim();
+    if (!value) { content.querySelector('[data-msg="' + id + '"]').textContent = "Type a category name first."; return; }
+    decide(Number(id), "modify", value);
+  }));
+}
+
+function openReview() {
+  bindReview();
+  loadReview();
+}
+
+// ---------- Activity ----------
+
+const activity = { data: null, error: null, msg: null };
+
+function renderActivity() {
+  if (activity.error) return `<div class="page">${errorNote(activity.error)}</div>`;
+  const d = activity.data;
+  if (!d) return `<div class="page">${loadingCard("Loading activity…")}</div>`;
+  const msg = activity.msg ? `<div class="note"><span>${esc(activity.msg)}</span></div>` : "";
+  if (!d.batches.length) {
+    return `<div class="page">${msg}<section class="card empty"><div class="empty-icon">${svg("activity")}</div><h2>No moves yet</h2><p>When you move files, each batch is listed here and can be undone.</p><button class="btn btn-primary" type="button" data-go="review">Go to Review Suggestions</button></section></div>`;
+  }
+  const cards = d.batches.map(b => {
+    const pending = b.moves_total - b.moves_undone;
+    const rows = b.moves.map(m => `
+      <li>
+        <div class="file-name">${esc(m.name)} ${m.undone ? '<span class="badge">Moved back</span>' : ""}</div>
+        <div class="file-sub mono">From: ${esc(m.from)}</div>
+        <div class="file-sub mono">To: ${esc(m.to)}</div>
+      </li>`).join("");
+    return `
+      <section class="card">
+        <div class="group-head">
+          <h3 class="card-title">${b.moves_total} ${b.moves_total === 1 ? "file" : "files"} moved</h3>
+          <span class="fine">${esc(new Date(b.executed_at).toLocaleString())}</span>
+        </div>
+        <p class="card-text">Into ${esc(b.destination_root)}${b.moves_undone ? ", " + b.moves_undone + " moved back" : ""}</p>
+        <details class="passage"><summary>Show files</summary><ul class="group-list">${rows}</ul></details>
+        ${pending ? `<button class="btn" type="button" data-undo="${esc(b.batch_id)}" data-count="${pending}">Undo (${pending} ${pending === 1 ? "file" : "files"})</button>` : '<p class="fine">Everything in this batch has been moved back.</p>'}
+      </section>`;
+  }).join("");
+  return `<div class="page">${msg}${cards}</div>`;
+}
+
+async function loadActivity() {
+  activity.error = null;
+  try {
+    activity.data = await api("/organize/history");
+  } catch (err) {
+    activity.error = err.message;
+  }
+  paintPage("activity", renderActivity, bindActivity);
+}
+
+function bindActivity() {
+  content.querySelectorAll("[data-undo]").forEach(b => b.addEventListener("click", async () => {
+    const count = Number(b.dataset.count);
+    if (!window.confirm("Move " + count + " files back to where they were?")) return;
+    try {
+      const r = await postJson("/organize/undo", { batch_id: b.dataset.undo, confirm: true, move_count: count });
+      activity.msg = "Moved back " + r.moved_back + (r.moved_back === 1 ? " file" : " files") + (r.failed ? ", " + r.failed + " failed" : "") + ".";
+      dropViewsAfterMove();
+      review.data = null;
+    } catch (err) {
+      activity.msg = err.message;
+    }
+    loadActivity();
+  }));
+}
+
+function openActivity() {
+  activity.msg = null;
+  bindActivity();
+  loadActivity();
+}
+
+// ---------- Settings ----------
+
+const settings = { status: null, msg: null };
+
+function aiAllowed() {
+  try { return localStorage.getItem("fg_ai") === "1"; } catch (err) { return false; }
+}
+
+function renderSettings() {
+  const st = settings.status;
+  let saved = "Loading…";
+  if (st && st.saved_data) {
+    saved = st.saved_data.exists
+      ? formatSize(st.saved_data.size_bytes) + (st.saved_data.saved_at ? ", saved " + new Date(st.saved_data.saved_at).toLocaleString() : "")
+      : "Nothing saved yet";
+  }
+  return `
+    <div class="page">
+      <section class="card">
+        <h2 class="card-title">AI answers</h2>
+        <p class="card-text">Ask Files can send the matching passages from your files to Anthropic's Claude to write an answer. It is off unless you turn it on, and you can change it for each question.</p>
+        <label class="check"><input type="checkbox" id="setAi" ${aiAllowed() ? "checked" : ""}><span>Turn on Claude answers by default in Ask Files</span></label>
+      </section>
+      <section class="card">
+        <h2 class="card-title">Saved data</h2>
+        <p class="card-text">File Genie remembers your last scan, your review decisions and your move history so they are still here after a restart. Currently saved: ${esc(saved)}.</p>
+        <button class="btn" type="button" id="setClear">Clear saved data</button>
+        <p class="fine" id="setMsg">${esc(settings.msg || "This deletes File Genie's own saved data only. Your files are never touched.")}</p>
+      </section>
+    </div>`;
+}
+
+async function loadSettings() {
+  try { settings.status = await api("/status"); } catch (err) { settings.status = null; }
+  paintPage("settings", renderSettings, bindSettings);
+}
+
+function resetViews() {
+  library.data = null; library.selectedId = null; library.preview = null;
+  library.type = "all"; library.category = "all"; library.query = "";
+  cats.data = null; dupes.data = null;
+  searchState.data = null; searchState.phase = "idle";
+  ask.data = null; ask.phase = "idle";
+  review.data = null; org.plan = null; org.result = null; org.phase = "idle"; org.error = null;
+  activity.data = null;
+  scan.folder = null; scan.phase = "idle"; scan.result = null; scan.error = null;
+}
+
+function bindSettings() {
+  const ai = document.getElementById("setAi");
+  if (ai) ai.addEventListener("change", () => {
+    try { localStorage.setItem("fg_ai", ai.checked ? "1" : "0"); } catch (err) { /* storage unavailable */ }
+    ask.useAi = ai.checked;
+  });
+  const clear = document.getElementById("setClear");
+  if (clear) clear.addEventListener("click", async () => {
+    if (!window.confirm("Clear File Genie's saved scan, decisions and move history? Your own files will not be touched.")) return;
+    try {
+      await api("/data?confirm=true", { method: "DELETE" });
+      resetViews();
+      settings.msg = "Saved data cleared. Your own files were not touched. Restart the backend to also clear what it holds in memory.";
+    } catch (err) {
+      settings.msg = err.message;
+    }
+    loadSettings();
+  });
+}
+
+function openSettings() {
+  settings.msg = null;
+  bindSettings();
+  loadSettings();
+}
+
 // ---------- Navigation ----------
 
 let currentPage = "dashboard";
@@ -1028,6 +1386,7 @@ async function checkBackend() {
 
 // ---------- Start ----------
 
+ask.useAi = aiAllowed();
 buildNav();
 go("dashboard");
 checkBackend();

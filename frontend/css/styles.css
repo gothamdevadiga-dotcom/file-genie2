@@ -357,3 +357,27 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; line-height
 
 .detail-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .detail-actions + .fine:empty { display: none; }
+
+/* ---------- Review, Activity, Settings ---------- */
+
+.badge-warn { background: #FEF3C7; color: #92400E; }
+.review-card { display: flex; flex-direction: column; gap: 10px; }
+.review-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.review-actions .input { width: 170px; height: 28px; font-size: 13px; }
+.chips { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.chip {
+  height: 26px; padding: 0 10px;
+  border: 1px solid var(--border); border-radius: 9999px;
+  background: #fff; font: inherit; font-size: 12px; cursor: pointer;
+}
+.chip:hover { background: var(--primary-tint); border-color: var(--primary); }
+.check.inline { margin-top: 0; }
+.plan-wrap { margin-top: 20px; display: flex; flex-direction: column; gap: 12px; }
+.plan { display: flex; flex-direction: column; gap: 4px; }
+.plan-list {
+  list-style: none; margin: 12px 0; padding: 0;
+  max-height: 260px; overflow: auto;
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+.plan-list li { padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 13px; word-break: break-word; }
+.plan-list li:last-child { border-bottom: 0; }
